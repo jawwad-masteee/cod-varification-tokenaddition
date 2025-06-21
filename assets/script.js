@@ -1,1094 +1,202 @@
+// COD Verifier JavaScript - Enhanced with UPI Deep Links and Real-time Status Updates
 jQuery(document).ready(function($) {
     'use strict';
     
-    console.log('COD Verifier: Multi-country script with Razorpay Payment Links initialized');
-    
-    // Check if codVerifier is defined
-    if (typeof codVerifier === 'undefined') {
-        console.error('COD Verifier: codVerifier object not found.');
-        return;
-    }
-    
-    // Get settings from global variable
-    const settings = window.codVerifierSettings || {
-        allowedRegions: 'india',
-        otpTimerDuration: 30,
-        testMode: '1'
-    };
-    
-    // Global verification state
-    window.codVerifierStatus = {
-      otpVerified: false,
-      tokenVerified: false
-    };
-    
-    let isBlockCheckout = $('.wc-block-checkout').length > 0;
-    let verificationBoxCreated = false;
-    let warningMessageCreated = false;
+    // Global variables
     let otpTimer = null;
     let tokenTimer = null;
-    let paymentModal = null;
+    let paymentStatusPoller = null;
+    let currentPaymentId = null;
+    let currentOrderId = null;
     
-    console.log('COD Verifier: Checkout type:', isBlockCheckout ? 'Blocks' : 'Classic');
-    console.log('COD Verifier: Settings:', settings);
+    // Initialize the verification system
+    initCODVerifier();
     
-    // ===== MULTI-COUNTRY PHONE VALIDATION =====
-    
-    const phoneValidationRules = {
-        '+91': {
-            name: 'India',
-            pattern: /^[6-9]\d{9}$/,
-            placeholder: 'Enter 10-digit number (e.g., 7039940998)',
-            length: 10
-        },
-        '+1': {
-            name: 'USA',
-            pattern: /^[2-9]\d{9}$/,
-            placeholder: 'Enter 10-digit number (e.g., 2125551234)',
-            length: 10
-        },
-        '+44': {
-            name: 'UK',
-            pattern: /^7\d{9}$/,
-            placeholder: 'Enter 10-digit number (e.g., 7700900123)',
-            length: 10
-        }
-    };
-    
-    function validatePhoneNumber(countryCode, phoneNumber) {
-        const rule = phoneValidationRules[countryCode];
-        if (!rule) {
-            return { valid: false, message: 'Unsupported country code' };
-        }
-        
-        if (!phoneNumber || phoneNumber.length !== rule.length) {
-            return { valid: false, message: `Please enter a ${rule.length}-digit ${rule.name} phone number` };
-        }
-        
-        if (!rule.pattern.test(phoneNumber)) {
-            return { valid: false, message: `Please enter a valid ${rule.name} phone number` };
-        }
-        
-        return { valid: true, message: 'Valid phone number' };
-    }
-    
-    function updatePhoneHelperText() {
-        const countryCode = $('#cod_country_code').val();
-        const rule = phoneValidationRules[countryCode];
-        if (rule) {
-            $('#cod_phone_help_text').text(rule.placeholder);
-            $('#cod_phone').attr('placeholder', rule.placeholder.split('(e.g., ')[0].trim());
-        }
-    }
-    
-    // ===== OTP TIMER FUNCTIONALITY =====
-    
-    function startOTPTimer(duration) {
-        const $btn = $('#cod_send_otp');
-        let timeLeft = duration;
-        
-        // Disable button and change appearance
-        $btn.prop('disabled', true)
-            .addClass('cod-btn-timer-active')
-            .removeClass('cod-btn-primary');
-        
-        // Update button text immediately
-        updateTimerDisplay(timeLeft, $btn);
-        
-        // Start countdown
-        otpTimer = setInterval(() => {
-            timeLeft--;
-            updateTimerDisplay(timeLeft, $btn);
-            
-            if (timeLeft <= 0) {
-                clearInterval(otpTimer);
-                otpTimer = null;
-                
-                // Re-enable button and restore appearance
-                $btn.prop('disabled', false)
-                    .removeClass('cod-btn-timer-active')
-                    .addClass('cod-btn-primary')
-                    .text('Send OTP');
-                
-                console.log('COD Verifier: OTP timer completed');
-            }
-        }, 1000);
-        
-        console.log('COD Verifier: OTP timer started for', duration, 'seconds');
-    }
-    
-    function updateTimerDisplay(timeLeft, $btn) {
-        if (timeLeft > 0) {
-            const minutes = Math.floor(timeLeft / 60);
-            const seconds = timeLeft % 60;
-            const displayTime = seconds < 10 ? `0${seconds}` : seconds;
-            
-            if (minutes > 0) {
-                $btn.text(`Resend in ${minutes}:${displayTime}`);
+    function initCODVerifier() {
+        // Show verification box when COD is selected
+        $(document).on('change', 'input[name="payment_method"]', function() {
+            if ($(this).val() === 'cod') {
+                showVerificationBox();
             } else {
-                $btn.text(`Resend in ${seconds}s`);
-            }
-        }
-    }
-    
-    function clearOTPTimer() {
-        if (otpTimer) {
-            clearInterval(otpTimer);
-            otpTimer = null;
-            
-            const $btn = $('#cod_send_otp');
-            $btn.prop('disabled', false)
-                .removeClass('cod-btn-timer-active')
-                .addClass('cod-btn-primary')
-                .text('Send OTP');
-        }
-    }
-    
-    // ===== PAYMENT MODAL FUNCTIONALITY =====
-    
-    function createPaymentModal() {
-        if (paymentModal) {
-            return paymentModal;
-        }
-        
-        const modalHTML = `
-            <div id="cod-payment-modal" class="cod-payment-modal" style="display: none;">
-                <div class="cod-payment-modal-overlay"></div>
-                <div class="cod-payment-modal-content">
-                    <div class="cod-payment-modal-header">
-                        <h3>₹1 Token Payment</h3>
-                        <button type="button" class="cod-payment-modal-close">&times;</button>
-                    </div>
-                    <div class="cod-payment-modal-body">
-                        <div class="cod-payment-tabs">
-                            <button type="button" id="cod-tab-qr" class="cod-payment-tab">
-                                <span class="cod-tab-icon">📱</span>
-                                Scan QR Code
-                            </button>
-                            <button type="button" id="cod-tab-app" class="cod-payment-tab">
-                                <span class="cod-tab-icon">💳</span>
-                                Pay via App
-                            </button>
-                        </div>
-                        <div class="cod-payment-content">
-                            <div id="cod-payment-qr-section" class="cod-payment-section">
-                                <div class="cod-qr-container">
-                                    <div id="cod-qr-code"></div>
-                                    <p class="cod-qr-instructions">Scan this QR code with any UPI app to pay ₹1</p>
-                                </div>
-                            </div>
-                            <div id="cod-payment-app-section" class="cod-payment-section" style="display: none;">
-                                <div class="cod-app-container">
-                                    <p class="cod-app-instructions">Click the button below to open your UPI app</p>
-                                    <button type="button" id="cod-proceed-payment" class="cod-btn cod-btn-primary cod-btn-large">
-                                        Proceed to Pay ₹1
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="cod-payment-info">
-                            <div id="cod-payment-status" class="cod-payment-status"></div>
-                            <div class="cod-payment-timer">
-                                <span id="cod-payment-countdown">Payment expires in 2:00</span>
-                            </div>
-                            <div class="cod-payment-note">
-                                <small>💡 ₹1 will be automatically refunded after verification</small>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `;
-        
-        $('body').append(modalHTML);
-        paymentModal = $('#cod-payment-modal');
-        
-        // Add modal styles
-        addPaymentModalStyles();
-        
-        // Bind events
-        bindPaymentModalEvents();
-        
-        return paymentModal;
-    }
-    
-    function addPaymentModalStyles() {
-        if ($('#cod-payment-modal-styles').length > 0) return;
-        
-        const styles = `
-            <style id="cod-payment-modal-styles">
-                .cod-payment-modal {
-                    position: fixed;
-                    top: 0;
-                    left: 0;
-                    width: 100%;
-                    height: 100%;
-                    z-index: 999999;
-                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-                }
-                
-                .cod-payment-modal-overlay {
-                    position: absolute;
-                    top: 0;
-                    left: 0;
-                    width: 100%;
-                    height: 100%;
-                    background: rgba(0, 0, 0, 0.7);
-                    backdrop-filter: blur(2px);
-                }
-                
-                .cod-payment-modal-content {
-                    position: absolute;
-                    top: 50%;
-                    left: 50%;
-                    transform: translate(-50%, -50%);
-                    background: #ffffff;
-                    border-radius: 12px;
-                    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
-                    max-width: 500px;
-                    width: 90%;
-                    max-height: 90vh;
-                    overflow: hidden;
-                    animation: modalSlideIn 0.3s ease-out;
-                }
-                
-                @keyframes modalSlideIn {
-                    from {
-                        opacity: 0;
-                        transform: translate(-50%, -60%);
-                    }
-                    to {
-                        opacity: 1;
-                        transform: translate(-50%, -50%);
-                    }
-                }
-                
-                .cod-payment-modal-header {
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    color: white;
-                    padding: 1.25rem;
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                }
-                
-                .cod-payment-modal-header h3 {
-                    margin: 0;
-                    font-size: 1.125rem;
-                    font-weight: 600;
-                }
-                
-                .cod-payment-modal-close {
-                    background: none;
-                    border: none;
-                    color: white;
-                    font-size: 1.5rem;
-                    cursor: pointer;
-                    padding: 0;
-                    width: 30px;
-                    height: 30px;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    border-radius: 50%;
-                    transition: background-color 0.2s;
-                }
-                
-                .cod-payment-modal-close:hover {
-                    background: rgba(255, 255, 255, 0.2);
-                }
-                
-                .cod-payment-modal-body {
-                    padding: 0;
-                }
-                
-                .cod-payment-tabs {
-                    display: flex;
-                    border-bottom: 1px solid #e2e8f0;
-                }
-                
-                .cod-payment-tab {
-                    flex: 1;
-                    padding: 0.9375rem 1.25rem;
-                    border: none;
-                    background: #f8fafc;
-                    cursor: pointer;
-                    font-size: 0.875rem;
-                    font-weight: 500;
-                    color: #64748b;
-                    transition: all 0.2s;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    gap: 0.5rem;
-                }
-                
-                .cod-payment-tab:hover {
-                    background: #e2e8f0;
-                }
-                
-                .cod-payment-tab.active {
-                    background: white;
-                    color: #1e293b;
-                    border-bottom: 2px solid #667eea;
-                }
-                
-                .cod-tab-icon {
-                    font-size: 1rem;
-                }
-                
-                .cod-payment-content {
-                    padding: 1.875rem;
-                }
-                
-                .cod-payment-section {
-                    text-align: center;
-                }
-                
-                .cod-qr-container {
-                    display: flex;
-                    flex-direction: column;
-                    align-items: center;
-                    gap: 1.25rem;
-                }
-                
-                #cod-qr-code {
-                    padding: 1.25rem;
-                    background: #f8fafc;
-                    border-radius: 12px;
-                    border: 2px dashed #cbd5e1;
-                    display: inline-block;
-                }
-                
-                .cod-qr-instructions {
-                    margin: 0;
-                    color: #64748b;
-                    font-size: 0.875rem;
-                }
-                
-                .cod-app-container {
-                    display: flex;
-                    flex-direction: column;
-                    align-items: center;
-                    gap: 1.25rem;
-                }
-                
-                .cod-app-instructions {
-                    margin: 0;
-                    color: #64748b;
-                    font-size: 0.875rem;
-                }
-                
-                .cod-payment-info {
-                    margin-top: 1.25rem;
-                    padding-top: 1.25rem;
-                    border-top: 1px solid #e2e8f0;
-                    text-align: center;
-                }
-                
-                .cod-payment-status {
-                    margin-bottom: 0.625rem;
-                    font-size: 0.875rem;
-                }
-                
-                .cod-payment-status.success {
-                    color: #059669;
-                }
-                
-                .cod-payment-status.error {
-                    color: #dc2626;
-                }
-                
-                .cod-payment-timer {
-                    margin-bottom: 0.625rem;
-                    font-size: 0.875rem;
-                    font-weight: 500;
-                    color: #f59e0b;
-                }
-                
-                .cod-payment-note {
-                    color: #64748b;
-                    font-size: 0.75rem;
-                }
-                
-                .cod-btn {
-                    padding: 0.75rem 1.5rem;
-                    border: none;
-                    border-radius: 6px;
-                    font-size: 0.875rem;
-                    font-weight: 500;
-                    cursor: pointer;
-                    transition: all 0.2s;
-                    text-decoration: none;
-                    display: inline-block;
-                }
-                
-                .cod-btn-primary {
-                    background: #667eea;
-                    color: white;
-                }
-                
-                .cod-btn-primary:hover {
-                    background: #5a67d8;
-                }
-                
-                .cod-btn-large {
-                    padding: 0.9375rem 1.875rem;
-                    font-size: 1rem;
-                }
-                
-                .cod-btn:disabled {
-                    opacity: 0.6;
-                    cursor: not-allowed;
-                }
-                
-                @media (max-width: 768px) {
-                    .cod-payment-modal-content {
-                        width: 95%;
-                        margin: 1.25rem;
-                    }
-                    
-                    .cod-payment-content {
-                        padding: 1.25rem;
-                    }
-                    
-                    .cod-payment-tab {
-                        padding: 0.75rem 0.9375rem;
-                        font-size: 0.8125rem;
-                    }
-                    
-                    .cod-payment-modal-header h3 {
-                        font-size: 1rem;
-                    }
-                }
-            </style>
-        `;
-        
-        $('head').append(styles);
-    }
-    
-    function bindPaymentModalEvents() {
-        // Close modal
-        $(document).on('click', '.cod-payment-modal-close, .cod-payment-modal-overlay', function() {
-            closePaymentModal();
-        });
-        
-        // Tab switching
-        $(document).on('click', '#cod-tab-qr', function() {
-            switchPaymentTab('qr');
-        });
-        
-        $(document).on('click', '#cod-tab-app', function() {
-            switchPaymentTab('app');
-        });
-        
-        // Proceed to payment
-        $(document).on('click', '#cod-proceed-payment', function() {
-            if (window.currentPaymentUrl) {
-                window.location.href = window.currentPaymentUrl;
+                hideVerificationBox();
             }
         });
         
-        // Escape key to close
-        $(document).on('keydown', function(e) {
-            if (e.key === 'Escape' && paymentModal && paymentModal.is(':visible')) {
-                closePaymentModal();
-            }
-        });
-    }
-    
-    function openPaymentModal() {
-        if (!paymentModal) {
-            createPaymentModal();
-        }
-        
-        // Reset modal state
-        $('#cod-payment-status').removeClass('success error').text('');
-        $('#cod-qr-code').empty();
-        window.currentPaymentUrl = null;
-        
-        // CRITICAL FIX: Device-based default tab selection
-        const isMobile = window.innerWidth <= 768;
-        switchPaymentTab(isMobile ? 'app' : 'qr');
-        
-        // Show modal
-        paymentModal.fadeIn(300);
-        
-        // Create payment link
-        createPaymentLink();
-    }
-    
-    function closePaymentModal() {
-        if (paymentModal) {
-            paymentModal.fadeOut(300);
-        }
-        
-        // CRITICAL FIX: Clear timer and re-enable button on modal close
-        clearTokenTimer();
-        
-        // Re-enable pay button and reset text
-        const $payBtn = $('#cod_pay_token');
-        $payBtn.prop('disabled', false).text('Pay ₹1 Token').removeClass('verified');
-    }
-    
-    function switchPaymentTab(tab) {
-        if (tab === 'qr') {
-            $('#cod-tab-qr').addClass('active');
-            $('#cod-tab-app').removeClass('active');
-            $('#cod-payment-qr-section').show();
-            $('#cod-payment-app-section').hide();
-        } else {
-            $('#cod-tab-app').addClass('active');
-            $('#cod-tab-qr').removeClass('active');
-            $('#cod-payment-qr-section').hide();
-            $('#cod-payment-app-section').show();
-        }
-    }
-    
-    function createPaymentLink() {
-        $('#cod-payment-status').text('Creating payment link...');
-        
-        $.ajax({
-            url: codVerifier.ajaxUrl,
-            type: 'POST',
-            data: {
-                action: 'cod_create_payment_link',
-                nonce: codVerifier.nonce
-            },
-            success: function(response) {
-                if (response.success) {
-                    const data = response.data;
-                    window.currentPaymentUrl = data.short_url;
-                    
-                    if (data.test_mode) {
-                        $('#cod-payment-status').addClass('success').text('Test mode: Payment link created');
-                        generateTestQR(data.short_url);
-                    } else {
-                        $('#cod-payment-status').addClass('success').text('Payment link created successfully');
-                        
-                        // CRITICAL FIX: Dynamic QR code rendering using fetched short_url
-                        if ($('#cod-tab-qr').hasClass('active')) {
-                            renderQRCode(data.short_url);
-                        } else {
-                            renderMobileRedirect(data.short_url);
-                        }
-                    }
-                    
-                    // CRITICAL FIX: Start 2-minute timer only after successful link creation
-                    startTokenTimer(120);
-                    
-                    // Set up tab click handlers with fetched URL
-                    $('#cod-tab-qr').off('click').on('click', function() {
-                        switchPaymentTab('qr');
-                        renderQRCode(data.short_url);
-                    });
-                    
-                    $('#cod-tab-app').off('click').on('click', function() {
-                        switchPaymentTab('app');
-                        renderMobileRedirect(data.short_url);
-                    });
-                    
-                } else {
-                    $('#cod-payment-status').addClass('error').text(response.data || 'Failed to create payment link');
-                }
-            },
-            error: function() {
-                $('#cod-payment-status').addClass('error').text('Network error. Please try again.');
-            }
-        });
-    }
-    
-    // CRITICAL FIX: Dynamic QR Code Rendering
-    function renderQRCode(url) {
-        const qrBox = document.getElementById('cod-qr-code');
-        if (!qrBox) return;
-        
-        qrBox.innerHTML = ''; // Clear previous content
-        
-        // Check if QRCode library is available
-        if (typeof QRCode !== 'undefined') {
-            new QRCode(qrBox, {
-                text: url,
-                width: 220,
-                height: 220,
-                colorDark: '#000000',
-                colorLight: '#ffffff',
-                correctLevel: QRCode.CorrectLevel.H
-            });
-            $('#cod-payment-status').text('Scan QR with UPI app. ₹1 will be refunded after payment.');
-        } else {
-            console.error("QRCode.js library not loaded.");
-            // Fallback: Use online QR code generator
-            const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(url)}`;
-            qrBox.innerHTML = `<img src="${qrUrl}" alt="Payment QR Code" style="max-width: 220px; border-radius: 8px;">`;
-            $('#cod-payment-status').text('Scan QR with UPI app. ₹1 will be refunded after payment.');
-        }
-    }
-    
-    // CRITICAL FIX: Mobile Redirect Implementation
-    function renderMobileRedirect(url) {
-        const appContainer = document.querySelector('.cod-app-container');
-        if (!appContainer) return;
-        
-        // Clear previous content
-        const proceedBtn = document.getElementById('cod-proceed-payment');
-        if (proceedBtn) {
-            proceedBtn.onclick = function() {
-                window.location.href = url; // Redirect to the payment link
-            };
-        }
-        
-        $('#cod-payment-status').text('You will be redirected to UPI app or payment page.');
-    }
-    
-    function generateTestQR(url) {
-        // For test mode, create a simple placeholder QR
-        $('#cod-qr-code').html(`
-            <div style="width: 220px; height: 220px; background: #f0f0f0; border: 2px dashed #ccc; display: flex; align-items: center; justify-content: center; border-radius: 8px; color: #666; font-size: 0.875rem; text-align: center;">
-                TEST QR CODE<br>
-                <small>Scan with UPI app</small>
-            </div>
-        `);
-    }
-    
-    function startTokenTimer(duration) {
-        let timeLeft = duration;
-        
-        function updateTimer() {
-            const minutes = Math.floor(timeLeft / 60);
-            const seconds = timeLeft % 60;
-            const displayTime = `${minutes}:${seconds.toString().padStart(2, '0')}`;
-            
-            $('#cod-payment-countdown').text(`Payment expires in ${displayTime}`);
-            
-            if (timeLeft <= 0) {
-                clearTokenTimer();
-                $('#cod-payment-status').removeClass('success').addClass('error').text('Payment session expired. You can retry.');
-                $('#cod-payment-countdown').text('Payment expired');
-            }
-            
-            timeLeft--;
-        }
-        
-        updateTimer(); // Update immediately
-        tokenTimer = setInterval(updateTimer, 1000);
-    }
-    
-    function clearTokenTimer() {
-        if (tokenTimer) {
-            clearInterval(tokenTimer);
-            tokenTimer = null;
-        }
-    }
-    
-    // ===== UTILITY FUNCTIONS =====
-    
-    function getSelectedPaymentMethod() {
-        let selectedMethod = null;
-        
-        const selectors = [
-            'input#radio-control-wc-payment-method-options-cod:checked',
-            'input[name="payment_method"]:checked',
-            '.wc-block-components-radio-control__input:checked',
-            'input[name*="radio-control-wc-payment-method"]:checked',
-            'input[name*="payment-method"]:checked',
-            'input.wc-payment-method-input:checked'
-        ];
-        
-        for (let selector of selectors) {
-            const $input = $(selector);
-            if ($input.length > 0) {
-                selectedMethod = $input.val();
-                if (selectedMethod) break;
-            }
-        }
-        
-        console.log('COD Verifier: Selected payment method:', selectedMethod);
-        return selectedMethod;
-    }
-    
-    function createVerificationBox() {
-        if (verificationBoxCreated) {
-            return $('#cod-verifier-wrapper-active');
-        }
-        
-        const $template = $('#cod-verification-template #cod-verifier-wrapper');
-        if ($template.length === 0) {
-            console.error('COD Verifier: Template not found in DOM');
-            return $();
-        }
-        
-        const $clonedBox = $template.clone();
-        $clonedBox.attr('id', 'cod-verifier-wrapper-active');
-        
-        let $insertionPoint = null;
-        
-        if (isBlockCheckout) {
-            const blockSelectors = [
-                '.wc-block-checkout__actions_row',
-                '.wc-block-components-checkout-place-order-button',
-                '.wp-block-woocommerce-checkout-order-summary-block'
-            ];
-            
-            for (let selector of blockSelectors) {
-                $insertionPoint = $(selector).first();
-                if ($insertionPoint.length > 0) {
-                    console.log('COD Verifier: Found insertion point:', selector);
-                    break;
-                }
-            }
-        } else {
-            const classicSelectors = [
-                '#order_review',
-                '.woocommerce-checkout-review-order',
-                '#place_order'
-            ];
-            
-            for (let selector of classicSelectors) {
-                $insertionPoint = $(selector).first();
-                if ($insertionPoint.length > 0) {
-                    console.log('COD Verifier: Found insertion point:', selector);
-                    break;
-                }
-            }
-        }
-        
-        if ($insertionPoint && $insertionPoint.length > 0) {
-            $insertionPoint.before($clonedBox);
-            verificationBoxCreated = true;
-            
-            // Initialize country code change handler
-            initializeCountryCodeHandler();
-            
-            console.log('COD Verifier: Verification box created');
-            return $clonedBox;
-        } else {
-            console.error('COD Verifier: No suitable insertion point found');
-            return $();
-        }
-    }
-    
-    function initializeCountryCodeHandler() {
-        // Update helper text when country code changes
-        $(document).on('change', '#cod_country_code', function() {
-            updatePhoneHelperText();
-            // Clear phone input when country changes
-            $('#cod_phone').val('');
-            // Clear any existing messages
-            $('#cod_otp_message').removeClass('success error').hide();
-        });
-        
-        // Initialize helper text
-        updatePhoneHelperText();
-    }
-    
-    function createWarningMessage() {
-        if (warningMessageCreated) {
-            return $('#cod-verification-warning-active');
-        }
-        
-        const warningHTML = `
-            <div id="cod-verification-warning-active" class="cod-verification-warning" style="display: none;">
-                <div class="cod-warning-content">
-                    <span class="cod-warning-icon">⚠️</span>
-                    <span class="cod-warning-text">Please complete verification before placing the order.</span>
-                </div>
-            </div>
-        `;
-        
-        let $insertionPoint = null;
-        
-        if (isBlockCheckout) {
-            const blockSelectors = [
-                '.wc-block-checkout__actions_row',
-                '.wc-block-components-checkout-place-order-button',
-                '.wp-block-woocommerce-checkout-order-summary-block'
-            ];
-            
-            for (let selector of blockSelectors) {
-                $insertionPoint = $(selector).first();
-                if ($insertionPoint.length > 0) {
-                    console.log('COD Verifier: Found warning insertion point:', selector);
-                    break;
-                }
-            }
-        } else {
-            const classicSelectors = [
-                '#order_review',
-                '.woocommerce-checkout-review-order',
-                '#place_order'
-            ];
-            
-            for (let selector of classicSelectors) {
-                $insertionPoint = $(selector).first();
-                if ($insertionPoint.length > 0) {
-                    console.log('COD Verifier: Found warning insertion point:', selector);
-                    break;
-                }
-            }
-        }
-        
-        if ($insertionPoint && $insertionPoint.length > 0) {
-            $insertionPoint.after(warningHTML);
-            warningMessageCreated = true;
-            console.log('COD Verifier: Warning message created');
-            return $('#cod-verification-warning-active');
-        } else {
-            console.error('COD Verifier: No suitable insertion point found for warning message');
-            return $();
-        }
-    }
-    
-    function updateVerificationWarning() {
-        const selectedMethod = getSelectedPaymentMethod();
-        const isCODSelected = selectedMethod === 'cod' || selectedMethod === 'cash_on_delivery';
-        
-        let $warningMessage = $('#cod-verification-warning-active');
-        if ($warningMessage.length === 0) {
-            $warningMessage = createWarningMessage();
-        }
-        
-        if ($warningMessage.length === 0) return;
-        
-        if (isCODSelected) {
-            let verificationComplete = true;
-            
-            if (codVerifier.enableOTP === '1' && !window.codVerifierStatus.otpVerified) {
-                verificationComplete = false;
-            }
-            
-            if (codVerifier.enableToken === '1' && (!window.codVerifierStatus.tokenVerified || !$('#cod_token_confirmed').is(':checked'))) {
-                verificationComplete = false;
-            }
-            
-            if (verificationComplete) {
-                $warningMessage.fadeOut(300);
-                console.log('COD Verifier: Warning message hidden - verification complete');
-            } else {
-                $warningMessage.fadeIn(300);
-                console.log('COD Verifier: Warning message shown - verification incomplete');
-            }
-        } else {
-            $warningMessage.fadeOut(300);
-            console.log('COD Verifier: Warning message hidden - non-COD selected');
-        }
-    }
-    
-    function updateHiddenFields() {
-        $('input[name="cod_otp_verified"]').remove();
-        $('input[name="cod_token_verified"]').remove();
-        
-        const $checkoutForm = $('form.checkout, form.wc-block-checkout__form').first();
-        if ($checkoutForm.length > 0) {
-            $checkoutForm.append('<input type="hidden" name="cod_otp_verified" value="' + (window.codVerifierStatus.otpVerified ? '1' : '0') + '">');
-            $checkoutForm.append('<input type="hidden" name="cod_token_verified" value="' + (window.codVerifierStatus.tokenVerified ? '1' : '0') + '">');
-        }
-
-        console.log('COD Verifier: Hidden fields updated - OTP:', window.codVerifierStatus.otpVerified, 'Token:', window.codVerifierStatus.tokenVerified);
-    }
-    
-    function updateVerificationStatus() {
-        if (codVerifier.enableOTP === '1') {
-            const otpBadge = $('#cod-otp-badge');
-            if (otpBadge.length) {
-                if (window.codVerifierStatus.otpVerified) {
-                    otpBadge.text('✓ Verified').removeClass('pending').addClass('verified');
-                } else {
-                    otpBadge.text('Pending').removeClass('verified').addClass('pending');
-                }
-            }
-        }
-
-        if (codVerifier.enableToken === '1') {
-            const tokenBadge = $('#cod-token-badge');
-            if (tokenBadge.length) {
-                if (window.codVerifierStatus.tokenVerified) {
-                    tokenBadge.text('✓ Completed').removeClass('pending').addClass('verified');
-                } else {
-                    tokenBadge.text('Pending').removeClass('verified').addClass('pending');
-                }
-            }
-        }
-
-        updateHiddenFields();
-        updatePlaceOrderButtonState();
-        updateVerificationWarning();
-    }
-    
-    function showMessage(type, message, status) {
-        const $messageElement = $('#cod_' + type + '_message');
-        $messageElement.removeClass('success error').addClass(status).html(message).show();
-    }
-
-    function updatePlaceOrderButtonState() {
-        console.log('COD Verifier: updatePlaceOrderButtonState triggered.');
-        const $placeOrderButton = $('#place_order, .wc-block-components-checkout-place-order-button, button[type="submit"]');
-        const isCODSelectedNow = $('input#radio-control-wc-payment-method-options-cod:checked, input[name="payment_method"][value="cod"]:checked, input[name="payment_method"]:checked[value="cash_on_delivery"], .wc-block-components-radio-control__input:checked[value="cod"], .wc-block-components-radio-control__input:checked[value="cash_on_delivery"], input[name*="radio-control-wc-payment-method"]:checked[value="cod"], input[name*="radio-control-wc-payment-method"]:checked[value="cash_on_delivery"], input[name*="payment-method"]:checked[value="cod"], input[name*="payment-method"]:checked[value="cash_on_delivery"], input.wc-payment-method-input:checked[value="cod"], input.wc-payment-method-input:checked[value="cash_on_delivery"]').length > 0;
-
-        console.log('COD Verifier: isCODSelectedNow:', isCODSelectedNow);
-        
-        if (isCODSelectedNow) {
-            console.log('COD Verifier: COD selected, checking verification status for button state.');
-            let canPlaceOrder = true;
-
-            if (codVerifier.enableOTP === '1' && !window.codVerifierStatus.otpVerified) {
-                canPlaceOrder = false;
-            }
-
-            const isTokenConfirmed = $('#cod_token_confirmed').is(':checked');
-            if (codVerifier.enableToken === '1' && (!window.codVerifierStatus.tokenVerified || !isTokenConfirmed)) {
-                 canPlaceOrder = false;
-            }
-
-            console.log('COD Verifier: canPlaceOrder:', canPlaceOrder);
-
-            if (canPlaceOrder) {
-                $placeOrderButton.prop('disabled', false).removeClass('disabled');
-                console.log('COD Verifier: Verification complete, enabling place order button.');
-            } else {
-                $placeOrderButton.prop('disabled', true).addClass('disabled');
-                console.log('COD Verifier: Verification incomplete, disabling place order button.');
-            }
-        } else {
-            $placeOrderButton.prop('disabled', false).removeClass('disabled');
-            console.log('COD Verifier: Non-COD selected, enabling place order button.');
-        }
-        
-        updateVerificationWarning();
-    }
-    
-    // ===== PAYMENT METHOD HANDLING =====
-    
-    function handlePaymentMethodChange() {
-        const selectedMethod = getSelectedPaymentMethod();
-        
-        if (selectedMethod === 'cod' || selectedMethod === 'cash_on_delivery') {
-            console.log('COD Verifier: COD selected, showing verification box.');
+        // Initialize if COD is already selected
+        if ($('input[name="payment_method"]:checked').val() === 'cod') {
             showVerificationBox();
-        } else {
-            console.log('COD Verifier: Non-COD selected, hiding verification box.');
-            hideVerificationBox();
         }
-        updatePlaceOrderButtonState();
+        
+        // Bind event handlers
+        bindEventHandlers();
+        
+        // Update phone help text based on country selection
+        updatePhoneHelpText();
+    }
+    
+    function bindEventHandlers() {
+        // Country code change handler
+        $(document).on('change', '#cod_country_code', function() {
+            updatePhoneHelpText();
+            $('#cod_phone').val(''); // Clear phone input when country changes
+        });
+        
+        // Send OTP handler
+        $(document).on('click', '#cod_send_otp', function() {
+            sendOTP();
+        });
+        
+        // Verify OTP handler
+        $(document).on('click', '#cod_verify_otp', function() {
+            verifyOTP();
+        });
+        
+        // Phone input validation
+        $(document).on('input', '#cod_phone', function() {
+            validatePhoneInput();
+        });
+        
+        // OTP input validation
+        $(document).on('input', '#cod_otp', function() {
+            validateOTPInput();
+        });
+        
+        // Token payment handler
+        $(document).on('click', '#cod_pay_token', function() {
+            initiateTokenPayment();
+        });
+        
+        // Token confirmation checkbox
+        $(document).on('change', '#cod_token_confirmed', function() {
+            updateTokenStatus();
+        });
     }
     
     function showVerificationBox() {
-        let $wrapper = $('#cod-verifier-wrapper-active');
+        const wrapper = $('#cod-verifier-wrapper');
+        const template = $('#cod-verification-template');
         
-        if ($wrapper.length === 0) {
-            $wrapper = createVerificationBox();
+        if (wrapper.length === 0 && template.length > 0) {
+            // Create wrapper from template
+            const content = template.html();
+            const newWrapper = $('<div id="cod-verifier-wrapper-active">' + content + '</div>');
+            
+            // Insert before checkout actions
+            const checkoutActions = $('.wc-block-checkout__actions_row, .woocommerce-checkout-review-order, #place_order').first().parent();
+            if (checkoutActions.length > 0) {
+                checkoutActions.before(newWrapper);
+            } else {
+                $('form.checkout, form.wc-block-checkout__form').append(newWrapper);
+            }
+        } else if (wrapper.length > 0) {
+            wrapper.attr('id', 'cod-verifier-wrapper-active').show();
         }
         
-        if ($wrapper.length > 0) {
-            $wrapper.show();
-            console.log('COD Verifier: Verification box shown');
-            populatePhoneFromBilling();
-            updateVerificationStatus();
-        }
+        // Show warning message
+        showWarningMessage();
+        
+        // Update country help text
+        updatePhoneHelpText();
     }
     
     function hideVerificationBox() {
-        const $wrapper = $('#cod-verifier-wrapper-active');
-        if ($wrapper.length > 0) {
-            $wrapper.hide();
-            console.log('COD Verifier: Verification box hidden');
-            resetVerificationStates();
+        $('#cod-verifier-wrapper, #cod-verifier-wrapper-active').hide();
+        hideWarningMessage();
+        
+        // Clear any running timers
+        clearTimers();
+    }
+    
+    function showWarningMessage() {
+        // Remove existing warning
+        $('.cod-verification-warning').remove();
+        
+        const warningHtml = `
+            <div class="cod-verification-warning">
+                <div class="cod-warning-content">
+                    <span class="cod-warning-icon">⚠️</span>
+                    <span class="cod-warning-text">Complete verification before placing order</span>
+                </div>
+            </div>
+        `;
+        
+        // Insert after checkout actions
+        const checkoutActions = $('.wc-block-checkout__actions_row, .woocommerce-checkout-review-order').last();
+        if (checkoutActions.length > 0) {
+            checkoutActions.after(warningHtml);
         }
     }
     
-    function populatePhoneFromBilling() {
-        const phoneSelectors = ['#billing_phone', 'input[name*="billing-phone"]', 'input[name*="phone"]'];
-        let billingPhone = '';
-        
-        for (let selector of phoneSelectors) {
-            const $phone = $(selector);
-            if ($phone.length > 0 && $phone.val()) {
-                billingPhone = $phone.val();
-                break;
-            }
-        }
-        
-        // Extract just the number part if it contains country code
-        if (billingPhone) {
-            // Remove common prefixes and non-digits
-            let cleanPhone = billingPhone.replace(/^\+?91|^\+?1|^\+?44|^0/, '').replace(/\D/g, '');
-            
-            if (cleanPhone && !$('#cod_phone').val()) {
-                $('#cod_phone').val(cleanPhone);
-            }
-        }
+    function hideWarningMessage() {
+        $('.cod-verification-warning').remove();
     }
     
-    function resetVerificationStates() {
-        window.codVerifierStatus.otpVerified = false;
-        window.codVerifierStatus.tokenVerified = false;
-        $('#cod_otp').val('');
-        $('#cod_phone').val('');
-        $('#cod_token_confirmed').prop('checked', false);
-        $('#cod_otp_message').removeClass('success error').hide();
-        $('#cod_token_message').removeClass('success error').hide();
-        $('#cod_verify_otp').prop('disabled', true).text('Verify').removeClass('verified');
-        $('#cod_pay_token').text('Pay ₹1 Token').removeClass('verified');
-        
-        // Clear timers
-        clearOTPTimer();
-        clearTokenTimer();
-        
-        updateHiddenFields();
-        updateVerificationStatus();
-    }
-    
-    // ===== EVENT LISTENERS FOR PAYMENT METHOD CHANGES =====
-
-    $(document).on('change', 'input[name="payment_method"], .wc-block-components-radio-control__input, input[name*="radio-control-wc-payment-method"], input[name*="payment-method"], input.wc-payment-method-input', handlePaymentMethodChange);
-
-    $(document.body).on('updated_checkout', function() {
-        console.log('COD Verifier: updated_checkout triggered');
-        setTimeout(updatePlaceOrderButtonState, 300);
-        setTimeout(handlePaymentMethodChange, 350);
-    });
-
-    $(document).on('change', '#payment, #order_review, .wc-block-checkout', function() {
-         console.log('COD Verifier: Payment method section change detected');
-         setTimeout(updatePlaceOrderButtonState, 200);
-         setTimeout(handlePaymentMethodChange, 250);
-    });
-
-    // Initial checks
-    setTimeout(updatePlaceOrderButtonState, 100);
-    setTimeout(handlePaymentMethodChange, 150);
-    setTimeout(updatePlaceOrderButtonState, 600);
-    setTimeout(handlePaymentMethodChange, 650);
-    setTimeout(updatePlaceOrderButtonState, 1500);
-    setTimeout(handlePaymentMethodChange, 1550);
-
-    // ===== ENHANCED OTP VERIFICATION HANDLERS =====
-    
-    $(document).on('click', '#cod_send_otp', function(e) {
-        e.preventDefault();
-        
-        const $btn = $(this);
-
-        // Prevent sending if button is disabled (cooldown active)
-        if ($btn.is(':disabled')) {
-            console.log('COD Verifier: Send OTP button is disabled, preventing resend.');
-            return;
-        }
-
+    function updatePhoneHelpText() {
         const countryCode = $('#cod_country_code').val();
-        const phoneNumber = $('#cod_phone').val().trim();
+        const helpText = $('#cod_phone_help_text');
         
-        // Validate phone number
-        const validation = validatePhoneNumber(countryCode, phoneNumber);
-        if (!validation.valid) {
-            showMessage('otp', validation.message, 'error');
+        let helpMessage = '';
+        switch(countryCode) {
+            case '+91':
+                helpMessage = 'Enter 10-digit Indian mobile number (e.g., 7039940998)';
+                break;
+            case '+1':
+                helpMessage = 'Enter 10-digit US phone number (e.g., 2125551234)';
+                break;
+            case '+44':
+                helpMessage = 'Enter UK phone number (e.g., 7700900123)';
+                break;
+            default:
+                helpMessage = 'Select country and enter phone number';
+        }
+        
+        helpText.text(helpMessage);
+    }
+    
+    function validatePhoneInput() {
+        const phone = $('#cod_phone').val();
+        const countryCode = $('#cod_country_code').val();
+        const sendBtn = $('#cod_send_otp');
+        
+        let isValid = false;
+        
+        switch(countryCode) {
+            case '+91':
+                isValid = /^[6-9]\d{9}$/.test(phone);
+                break;
+            case '+1':
+                isValid = /^[2-9]\d{9}$/.test(phone);
+                break;
+            case '+44':
+                isValid = /^7\d{9}$/.test(phone);
+                break;
+        }
+        
+        sendBtn.prop('disabled', !isValid);
+        return isValid;
+    }
+    
+    function validateOTPInput() {
+        const otp = $('#cod_otp').val();
+        const verifyBtn = $('#cod_verify_otp');
+        
+        const isValid = /^\d{6}$/.test(otp);
+        verifyBtn.prop('disabled', !isValid);
+        return isValid;
+    }
+    
+    function sendOTP() {
+        const phone = $('#cod_phone').val();
+        const countryCode = $('#cod_country_code').val();
+        const fullPhone = countryCode + phone;
+        
+        if (!validatePhoneInput()) {
+            showMessage('cod_otp_message', 'Please enter a valid phone number', 'error');
             return;
         }
         
-        // Create full E.164 format phone number
-        const fullPhone = countryCode + phoneNumber;
-        
-        $btn.prop('disabled', true).text('Sending...');
+        const sendBtn = $('#cod_send_otp');
+        sendBtn.prop('disabled', true).text('Sending...');
         
         $.ajax({
             url: codVerifier.ajaxUrl,
@@ -1097,50 +205,42 @@ jQuery(document).ready(function($) {
                 action: 'cod_send_otp',
                 phone: fullPhone,
                 country_code: countryCode,
-                phone_number: phoneNumber,
+                phone_number: phone,
                 nonce: codVerifier.nonce
             },
             success: function(response) {
                 if (response.success) {
-                    showMessage('otp', response.data.message, 'success');
+                    showMessage('cod_otp_message', response.data.message, 'success');
+                    startOTPTimer();
+                    
+                    // Show OTP in test mode
                     if (response.data.test_mode && response.data.otp) {
-                        alert('TEST MODE - Your OTP is: ' + response.data.otp);
+                        setTimeout(function() {
+                            alert('TEST MODE - Your OTP is: ' + response.data.otp);
+                        }, 500);
                     }
-                    
-                    // Start timer with configured duration
-                    startOTPTimer(settings.otpTimerDuration);
-                    
-                    // Enable OTP input
-                    $('#cod_otp').prop('disabled', false).focus();
                 } else {
-                    showMessage('otp', response.data, 'error');
-                    $btn.prop('disabled', false).text('Send OTP');
+                    showMessage('cod_otp_message', response.data || 'Failed to send OTP', 'error');
+                    sendBtn.prop('disabled', false).text('Send OTP');
                 }
             },
             error: function() {
-                showMessage('otp', 'Failed to send OTP. Please try again.', 'error');
-                $btn.prop('disabled', false).text('Send OTP');
+                showMessage('cod_otp_message', 'Network error. Please try again.', 'error');
+                sendBtn.prop('disabled', false).text('Send OTP');
             }
         });
-    });
+    }
     
-    $(document).on('input', '#cod_otp', function() {
-        const otp = $(this).val().trim();
-        $('#cod_verify_otp').prop('disabled', otp.length !== 6);
-    });
-    
-    $(document).on('click', '#cod_verify_otp', function(e) {
-        e.preventDefault();
+    function verifyOTP() {
+        const otp = $('#cod_otp').val();
         
-        const otp = $('#cod_otp').val().trim();
-        const $btn = $(this);
-        
-        if (!otp || otp.length !== 6) {
-            showMessage('otp', 'Please enter a valid 6-digit OTP', 'error');
+        if (!validateOTPInput()) {
+            showMessage('cod_otp_message', 'Please enter a valid 6-digit OTP', 'error');
             return;
         }
         
-        $btn.prop('disabled', true).text('Verifying...');
+        const verifyBtn = $('#cod_verify_otp');
+        verifyBtn.prop('disabled', true).text('Verifying...');
         
         $.ajax({
             url: codVerifier.ajaxUrl,
@@ -1152,178 +252,683 @@ jQuery(document).ready(function($) {
             },
             success: function(response) {
                 if (response.success) {
-                    showMessage('otp', response.data, 'success');
-                    window.codVerifierStatus.otpVerified = true;
-                    $btn.text('✓ Verified').addClass('verified');
+                    showMessage('cod_otp_message', response.data, 'success');
+                    updateStatusBadge('cod-otp-badge', 'verified');
+                    verifyBtn.removeClass('cod-btn-success').addClass('verified').text('✓ Verified');
                     
-                    // Clear timer since verification is complete
-                    clearOTPTimer();
-                    
-                    updateVerificationStatus();
+                    // Add hidden input for form submission
+                    if ($('input[name="cod_otp_verified"]').length === 0) {
+                        $('form.checkout, form.wc-block-checkout__form').append('<input type="hidden" name="cod_otp_verified" value="1">');
+                    }
                 } else {
-                    showMessage('otp', response.data, 'error');
-                    $btn.prop('disabled', false).text('Verify');
+                    showMessage('cod_otp_message', response.data || 'Invalid OTP', 'error');
+                    verifyBtn.prop('disabled', false).text('Verify');
                 }
             },
             error: function() {
-                showMessage('otp', 'Failed to verify OTP. Please try again.', 'error');
-                $btn.prop('disabled', false).text('Verify');
+                showMessage('cod_otp_message', 'Network error. Please try again.', 'error');
+                verifyBtn.prop('disabled', false).text('Verify');
             }
         });
-    });
-    
-    // ===== NEW: RAZORPAY TOKEN PAYMENT HANDLERS =====
-    
-    $(document).on('click', '#cod_pay_token', function(e) {
-        e.preventDefault();
-        
-        const $btn = $(this);
-        
-        // Don't prevent if user wants to retry after expiry
-        if ($btn.hasClass('verified')) {
-            return; // Already verified, do nothing
-        }
-        
-        // Open payment modal
-        openPaymentModal();
-    });
-
-    $(document).on('change', '#cod_token_confirmed', function() {
-          console.log('COD Verifier: Token confirmed checkbox changed.');
-          updatePlaceOrderButtonState();
-     });
-    
-    // ===== CRITICAL VALIDATION FUNCTION =====
-    
-    function preventOrderPlacement(e) {
-        console.log('COD Verifier: preventOrderPlacement triggered (final button check). ');
-        const $placeOrderButton = $('#place_order, .wc-block-components-checkout-place-order-button, button[type="submit"]');
-
-        if ($placeOrderButton.is(':disabled')) {
-            console.log('COD Verifier: Order placement prevented by disabled button.');
-            if (e && typeof e.preventDefault === 'function') {
-                 e.preventDefault();
-                 if (typeof e.stopImmediatePropagation === 'function') {
-                      e.stopImmediatePropagation();
-                 }
-                 if (typeof e.stopPropagation === 'function') {
-                      e.stopPropagation();
-                 }
-            }
-
-            const selectedMethod = getSelectedPaymentMethod();
-            if (selectedMethod === 'cod' || selectedMethod === 'cash_on_delivery') {
-                 let errors = [];
-                 if (codVerifier.enableOTP === '1' && !window.codVerifierStatus.otpVerified) {
-                     errors.push('• Phone number verification via OTP');
-                 }
-                 if (codVerifier.enableToken === '1' && (!window.codVerifierStatus.tokenVerified || !$('#cod_token_confirmed').is(':checked'))) {
-                     errors.push('• ₹1 token payment completion and confirmation');
-                 }
-                 
-                 if (errors.length > 0) {
-                    const message = 'Please complete the following steps:\n' + errors.join('\n');
-                    alert(message);
-                    
-                    const $verificationBox = $('#cod-verifier-wrapper-active');
-                    if ($verificationBox.length > 0 && $verificationBox.is(':visible')) {
-                        $('html, body').animate({
-                            scrollTop: $verificationBox.offset().top - 100
-                        }, 500);
-                    }
-                 }
-            }
-
-            return false;
-        }
-
-        console.log('COD Verifier: PreventOrderPlacement check passed, allowing order.');
-        return true;
     }
     
-    // ===== COMPREHENSIVE VALIDATION EVENT LISTENERS =====
-
-    $(document).on('click', '#place_order, .wc-block-components-checkout-place-order-button, button[type="submit"]', function(e) {
-        console.log('COD Verifier: Order placement attempted via click');
-        if (!preventOrderPlacement(e)) {
-             e.preventDefault();
-             e.stopImmediatePropagation();
-             e.stopPropagation();
-             return false;
+    function startOTPTimer() {
+        const sendBtn = $('#cod_send_otp');
+        const duration = parseInt(codVerifier.otpTimerDuration) || 30;
+        let timeLeft = duration;
+        
+        // Clear any existing timer
+        if (otpTimer) {
+            clearInterval(otpTimer);
         }
-    });
-
-    $(document).on('submit', 'form.checkout, form.wc-block-checkout__form, form[name="checkout"]', function(e) {
-        console.log('COD Verifier: Form submission attempted');
-        if (!preventOrderPlacement(e)) {
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            e.stopPropagation();
-            return false;
+        
+        // Update button state
+        sendBtn.addClass('cod-btn-timer-active');
+        
+        otpTimer = setInterval(function() {
+            sendBtn.text('Resend (' + timeLeft + 's)');
+            timeLeft--;
+            
+            if (timeLeft < 0) {
+                clearInterval(otpTimer);
+                sendBtn.removeClass('cod-btn-timer-active')
+                      .prop('disabled', false)
+                      .text('Send OTP');
+                otpTimer = null;
+            }
+        }, 1000);
+    }
+    
+    function initiateTokenPayment() {
+        const payBtn = $('#cod_pay_token');
+        payBtn.prop('disabled', true).text('Creating Payment...');
+        
+        // Check if test mode
+        if (codVerifier.testMode === '1') {
+            handleTestModePayment();
+            return;
         }
-    });
-
-    $(document).on('checkout_place_order', function(e) {
-        console.log('COD Verifier: WooCommerce checkout_place_order event');
-        if (!preventOrderPlacement(e)) {
-             e.preventDefault();
-             e.stopImmediatePropagation();
-             return false;
+        
+        // Create payment link for production
+        $.ajax({
+            url: codVerifier.ajaxUrl,
+            type: 'POST',
+            data: {
+                action: 'cod_create_payment_link',
+                nonce: codVerifier.nonce
+            },
+            success: function(response) {
+                if (response.success) {
+                    currentOrderId = response.data.link_id;
+                    
+                    // Check if mobile device
+                    if (isMobileDevice()) {
+                        // Mobile: Open Razorpay popup
+                        openRazorpayPopup(response.data);
+                    } else {
+                        // Desktop: Show QR code with UPI deep link
+                        showQRCodePayment(response.data);
+                    }
+                } else {
+                    showMessage('cod_token_message', response.data || 'Failed to create payment', 'error');
+                    payBtn.prop('disabled', false).text('Pay ₹1 Token');
+                }
+            },
+            error: function() {
+                showMessage('cod_token_message', 'Network error. Please try again.', 'error');
+                payBtn.prop('disabled', false).text('Pay ₹1 Token');
+            }
+        });
+    }
+    
+    function handleTestModePayment() {
+        // Simulate payment process in test mode
+        showMessage('cod_token_message', 'Test mode: Simulating payment...', 'success');
+        
+        setTimeout(function() {
+            $.ajax({
+                url: codVerifier.ajaxUrl,
+                type: 'POST',
+                data: {
+                    action: 'cod_verify_token_payment',
+                    test_mode: '1',
+                    nonce: codVerifier.nonce
+                },
+                success: function(response) {
+                    if (response.success) {
+                        showSuccessAnimation();
+                        updateTokenStatus(true);
+                    }
+                }
+            });
+        }, 2000);
+    }
+    
+    function showQRCodePayment(paymentData) {
+        // Generate UPI deep link instead of Razorpay link
+        const upiLink = generateUPIDeepLink(paymentData);
+        
+        // Create QR code modal
+        const modalHtml = `
+            <div id="cod-qr-modal" class="cod-qr-modal">
+                <div class="cod-qr-content">
+                    <div class="cod-qr-header">
+                        <h3>Scan QR Code to Pay ₹1</h3>
+                        <button class="cod-qr-close" onclick="closeCODQRModal()">&times;</button>
+                    </div>
+                    <div class="cod-qr-body">
+                        <div id="cod-qr-code" class="cod-qr-code-container"></div>
+                        <p class="cod-qr-info">🛈 Scan QR code with any UPI app</p>
+                        <p class="cod-qr-trust">🔒 Secure Payment · ₹1 will be refunded</p>
+                        <div class="cod-qr-timer">
+                            <span>Payment expires in: <span id="cod-payment-timer">15:00</span></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        // Remove existing modal and add new one
+        $('#cod-qr-modal').remove();
+        $('body').append(modalHtml);
+        
+        // Generate QR code with UPI deep link
+        if (typeof QRCode !== 'undefined') {
+            new QRCode(document.getElementById('cod-qr-code'), {
+                text: upiLink,
+                width: 200,
+                height: 200,
+                colorDark: '#000000',
+                colorLight: '#ffffff'
+            });
         }
-        return true;
-    });
-
-    $(document).on('checkout_place_order_cod', function(e) {
-        console.log('COD Verifier: WooCommerce checkout_place_order_cod event');
-        if (!preventOrderPlacement(e)) {
-             e.preventDefault();
-             e.stopImmediatePropagation();
-             return false;
-        }
-        return true;
-    });
-
-    $('form.checkout').on('checkout_place_order', function(e) {
-        console.log('COD Verifier: Classic checkout form validation');
-        if (!preventOrderPlacement(e)) {
-             e.preventDefault();
-             e.stopImmediatePropagation();
-             return false;
-        }
-        return true;
-    });
-
-    // Additional safety net - continuous validation
-    setInterval(function() {
-        const selectedMethod = getSelectedPaymentMethod();
-        if (selectedMethod === 'cod' || selectedMethod === 'cash_on_delivery') {
-            updateHiddenFields();
+        
+        // Start payment timer
+        startPaymentTimer(15 * 60); // 15 minutes
+        
+        // Start polling for payment status
+        startPaymentStatusPolling(paymentData.link_id);
+        
+        // Show modal
+        $('#cod-qr-modal').show();
+    }
+    
+    function generateUPIDeepLink(paymentData) {
+        // Generate UPI deep link for direct app opening
+        const upiParams = {
+            pa: 'merchant@upi', // This should come from backend/Razorpay
+            pn: 'COD Verifier',
+            mc: '0000',
+            tid: paymentData.link_id || 'TXN' + Date.now(),
+            tr: paymentData.link_id || 'REF' + Date.now(),
+            tn: 'COD Token Payment',
+            am: '1.00',
+            cu: 'INR'
+        };
+        
+        const params = Object.keys(upiParams)
+            .map(key => `${key}=${encodeURIComponent(upiParams[key])}`)
+            .join('&');
+            
+        return `upi://pay?${params}`;
+    }
+    
+    function openRazorpayPopup(paymentData) {
+        // Mobile: Use Razorpay popup
+        const options = {
+            key: paymentData.key || 'rzp_test_key',
+            amount: 100, // ₹1 in paise
+            currency: 'INR',
+            name: 'COD Token Payment',
+            description: '₹1 verification payment for COD order',
+            order_id: paymentData.link_id,
+            handler: function(response) {
+                currentPaymentId = response.razorpay_payment_id;
+                verifyPaymentSuccess(response);
+            },
+            prefill: {
+                contact: $('#cod_phone').val()
+            },
+            theme: {
+                color: '#667eea'
+            },
+            modal: {
+                ondismiss: function() {
+                    $('#cod_pay_token').prop('disabled', false).text('Pay ₹1 Token');
+                    showMessage('cod_token_message', 'Payment cancelled. Please try again.', 'error');
+                }
+            }
+        };
+        
+        if (typeof Razorpay !== 'undefined') {
+            const rzp = new Razorpay(options);
+            rzp.open();
         } else {
-             const $placeOrderButton = $('#place_order, .wc-block-components-checkout-place-order-button, button[type="submit"]');
-             if ($placeOrderButton.is(':disabled')) {
-                  $placeOrderButton.prop('disabled', false).removeClass('disabled');
-                  console.log('COD Verifier: Interval check: Non-COD selected, ensuring button is enabled.');
-             }
+            showMessage('cod_token_message', 'Payment system not loaded. Please refresh the page.', 'error');
+            $('#cod_pay_token').prop('disabled', false).text('Pay ₹1 Token');
         }
-    }, 1500);
-
+    }
+    
+    function startPaymentTimer(seconds) {
+        let timeLeft = seconds;
+        const timerElement = $('#cod-payment-timer');
+        
+        if (tokenTimer) {
+            clearInterval(tokenTimer);
+        }
+        
+        tokenTimer = setInterval(function() {
+            const minutes = Math.floor(timeLeft / 60);
+            const secs = timeLeft % 60;
+            timerElement.text(`${minutes}:${secs.toString().padStart(2, '0')}`);
+            
+            timeLeft--;
+            
+            if (timeLeft < 0) {
+                clearInterval(tokenTimer);
+                closeCODQRModal();
+                showMessage('cod_token_message', 'Payment session expired. Please try again.', 'error');
+                $('#cod_pay_token').prop('disabled', false).text('Pay ₹1 Token');
+            }
+        }, 1000);
+    }
+    
+    function startPaymentStatusPolling(linkId) {
+        if (paymentStatusPoller) {
+            clearInterval(paymentStatusPoller);
+        }
+        
+        paymentStatusPoller = setInterval(function() {
+            $.ajax({
+                url: codVerifier.ajaxUrl,
+                type: 'POST',
+                data: {
+                    action: 'cod_check_payment_status',
+                    link_id: linkId,
+                    nonce: codVerifier.nonce
+                },
+                success: function(response) {
+                    if (response.success && response.data.status === 'paid') {
+                        clearInterval(paymentStatusPoller);
+                        currentPaymentId = response.data.payment_id;
+                        
+                        // Verify payment
+                        verifyPaymentSuccess({
+                            razorpay_payment_id: response.data.payment_id,
+                            razorpay_order_id: linkId
+                        });
+                    }
+                }
+            });
+        }, 5000); // Poll every 5 seconds
+    }
+    
+    function verifyPaymentSuccess(paymentResponse) {
+        $.ajax({
+            url: codVerifier.ajaxUrl,
+            type: 'POST',
+            data: {
+                action: 'cod_verify_token_payment',
+                payment_id: paymentResponse.razorpay_payment_id,
+                payment_link_id: paymentResponse.razorpay_order_id,
+                nonce: codVerifier.nonce
+            },
+            success: function(response) {
+                if (response.success) {
+                    showSuccessAnimation();
+                    updateTokenStatus(true);
+                } else {
+                    showMessage('cod_token_message', response.data || 'Payment verification failed', 'error');
+                    $('#cod_pay_token').prop('disabled', false).text('Pay ₹1 Token');
+                }
+            },
+            error: function() {
+                showMessage('cod_token_message', 'Verification failed. Please contact support.', 'error');
+                $('#cod_pay_token').prop('disabled', false).text('Pay ₹1 Token');
+            }
+        });
+    }
+    
+    function showSuccessAnimation() {
+        // Close QR modal if open
+        closeCODQRModal();
+        
+        // Create success popup
+        const successHtml = `
+            <div id="cod-success-modal" class="cod-success-modal">
+                <div class="cod-success-content">
+                    <div class="cod-success-animation">
+                        <div class="cod-checkmark">
+                            <div class="cod-checkmark-circle"></div>
+                            <div class="cod-checkmark-stem"></div>
+                            <div class="cod-checkmark-kick"></div>
+                        </div>
+                    </div>
+                    <h3>Payment Successful!</h3>
+                    <p>✅ Your payment is successful. Your money will be refunded shortly.</p>
+                    <div class="cod-success-timer">
+                        <span>Closing in <span id="cod-success-countdown">5</span> seconds...</span>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        $('body').append(successHtml);
+        $('#cod-success-modal').show();
+        
+        // Countdown timer
+        let countdown = 5;
+        const countdownTimer = setInterval(function() {
+            countdown--;
+            $('#cod-success-countdown').text(countdown);
+            
+            if (countdown <= 0) {
+                clearInterval(countdownTimer);
+                $('#cod-success-modal').remove();
+            }
+        }, 1000);
+        
+        // Auto-close after 5 seconds
+        setTimeout(function() {
+            $('#cod-success-modal').remove();
+        }, 5000);
+    }
+    
+    function updateTokenStatus(verified = false) {
+        if (verified) {
+            updateStatusBadge('cod-token-badge', 'verified');
+            $('#cod_pay_token').removeClass('cod-btn-warning').addClass('verified').text('✓ Payment Complete');
+            $('#cod_token_confirmed').prop('checked', true);
+            
+            // Add hidden input for form submission
+            if ($('input[name="cod_token_verified"]').length === 0) {
+                $('form.checkout, form.wc-block-checkout__form').append('<input type="hidden" name="cod_token_verified" value="1">');
+            }
+            
+            showMessage('cod_token_message', 'Token payment completed successfully!', 'success');
+        }
+    }
+    
+    function updateStatusBadge(badgeId, status) {
+        const badge = $('#' + badgeId);
+        badge.removeClass('pending verified').addClass(status);
+        badge.text(status === 'verified' ? 'Verified' : 'Pending');
+    }
+    
+    function showMessage(containerId, message, type) {
+        const container = $('#' + containerId);
+        container.removeClass('success error').addClass(type).text(message).show();
+        
+        // Auto-hide success messages after 5 seconds
+        if (type === 'success') {
+            setTimeout(function() {
+                container.fadeOut();
+            }, 5000);
+        }
+    }
+    
+    function isMobileDevice() {
+        return window.innerWidth <= 768 || /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    }
+    
+    function clearTimers() {
+        if (otpTimer) {
+            clearInterval(otpTimer);
+            otpTimer = null;
+        }
+        if (tokenTimer) {
+            clearInterval(tokenTimer);
+            tokenTimer = null;
+        }
+        if (paymentStatusPoller) {
+            clearInterval(paymentStatusPoller);
+            paymentStatusPoller = null;
+        }
+    }
+    
+    // Global function to close QR modal
+    window.closeCODQRModal = function() {
+        $('#cod-qr-modal').remove();
+        clearTimers();
+        $('#cod_pay_token').prop('disabled', false).text('Pay ₹1 Token');
+    };
+    
     // Cleanup on page unload
     $(window).on('beforeunload', function() {
-        clearOTPTimer();
-        clearTokenTimer();
+        clearTimers();
     });
-
-    // CRITICAL FIX: Load QRCode.js library if not already loaded
-    if (typeof QRCode === 'undefined') {
-        const script = document.createElement('script');
-        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
-        script.async = true;
-        script.onload = function() {
-            console.log('COD Verifier: QRCode.js library loaded successfully');
-        };
-        script.onerror = function() {
-            console.error('COD Verifier: Failed to load QRCode.js library');
-        };
-        document.head.appendChild(script);
-    }
 });
+
+// Additional CSS for animations and modals
+const additionalCSS = `
+<style>
+.cod-qr-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.8);
+    display: none;
+    z-index: 10000;
+    align-items: center;
+    justify-content: center;
+}
+
+.cod-qr-content {
+    background: white;
+    border-radius: 12px;
+    padding: 0;
+    max-width: 400px;
+    width: 90%;
+    max-height: 90vh;
+    overflow-y: auto;
+}
+
+.cod-qr-header {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 20px;
+    border-radius: 12px 12px 0 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.cod-qr-header h3 {
+    margin: 0;
+    font-size: 18px;
+}
+
+.cod-qr-close {
+    background: none;
+    border: none;
+    color: white;
+    font-size: 24px;
+    cursor: pointer;
+    padding: 0;
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.cod-qr-body {
+    padding: 30px;
+    text-align: center;
+}
+
+.cod-qr-code-container {
+    margin: 20px auto;
+    display: inline-block;
+    padding: 20px;
+    background: #f8fafc;
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+}
+
+.cod-qr-info {
+    color: #667eea;
+    font-weight: 500;
+    margin: 15px 0 5px 0;
+}
+
+.cod-qr-trust {
+    color: #10b981;
+    font-size: 14px;
+    margin: 5px 0 20px 0;
+}
+
+.cod-qr-timer {
+    background: #fef3c7;
+    color: #92400e;
+    padding: 10px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.cod-success-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.8);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10001;
+}
+
+.cod-success-content {
+    background: white;
+    border-radius: 12px;
+    padding: 40px;
+    text-align: center;
+    max-width: 400px;
+    width: 90%;
+}
+
+.cod-success-animation {
+    margin-bottom: 20px;
+}
+
+.cod-checkmark {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    display: block;
+    stroke-width: 3;
+    stroke: #10b981;
+    stroke-miterlimit: 10;
+    margin: 0 auto 20px;
+    position: relative;
+    animation: cod-checkmark-fill 0.4s ease-in-out 0.4s forwards, cod-checkmark-scale 0.3s ease-in-out 0.9s both;
+}
+
+.cod-checkmark-circle {
+    stroke-dasharray: 166;
+    stroke-dashoffset: 166;
+    stroke-width: 3;
+    stroke-miterlimit: 10;
+    stroke: #10b981;
+    fill: none;
+    animation: cod-checkmark-stroke 0.6s cubic-bezier(0.65, 0, 0.45, 1) forwards;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    border: 3px solid #10b981;
+}
+
+.cod-checkmark-stem {
+    position: absolute;
+    width: 3px;
+    height: 20px;
+    background: #10b981;
+    left: 32px;
+    top: 45px;
+    transform: rotate(45deg);
+    transform-origin: left bottom;
+    animation: cod-checkmark-stem 0.3s ease-in-out 0.9s both;
+}
+
+.cod-checkmark-kick {
+    position: absolute;
+    width: 3px;
+    height: 12px;
+    background: #10b981;
+    left: 25px;
+    top: 52px;
+    transform: rotate(-45deg);
+    transform-origin: left bottom;
+    animation: cod-checkmark-kick 0.2s ease-in-out 1.15s both;
+}
+
+.cod-success-content h3 {
+    color: #10b981;
+    margin: 0 0 15px 0;
+    font-size: 24px;
+}
+
+.cod-success-content p {
+    color: #374151;
+    margin: 0 0 20px 0;
+    line-height: 1.5;
+}
+
+.cod-success-timer {
+    color: #6b7280;
+    font-size: 14px;
+}
+
+@keyframes cod-checkmark-stroke {
+    100% {
+        stroke-dashoffset: 0;
+    }
+}
+
+@keyframes cod-checkmark-scale {
+    0%, 100% {
+        transform: none;
+    }
+    50% {
+        transform: scale3d(1.1, 1.1, 1);
+    }
+}
+
+@keyframes cod-checkmark-fill {
+    100% {
+        box-shadow: inset 0px 0px 0px 30px #10b981;
+    }
+}
+
+@keyframes cod-checkmark-stem {
+    0% {
+        height: 0;
+    }
+    100% {
+        height: 20px;
+    }
+}
+
+@keyframes cod-checkmark-kick {
+    0% {
+        height: 0;
+    }
+    100% {
+        height: 12px;
+    }
+}
+
+@media (max-width: 768px) {
+    .cod-qr-content {
+        width: 95%;
+        margin: 20px;
+    }
+    
+    .cod-qr-body {
+        padding: 20px;
+    }
+    
+    .cod-success-content {
+        width: 95%;
+        padding: 30px 20px;
+    }
+    
+    .cod-checkmark {
+        width: 60px;
+        height: 60px;
+    }
+    
+    .cod-checkmark-circle {
+        width: 60px;
+        height: 60px;
+    }
+    
+    .cod-checkmark-stem {
+        left: 24px;
+        top: 34px;
+        height: 15px;
+    }
+    
+    .cod-checkmark-kick {
+        left: 19px;
+        top: 39px;
+        height: 9px;
+    }
+}
+</style>
+`;
+
+// Inject additional CSS
+if (!document.getElementById('cod-verifier-additional-css')) {
+    const styleElement = document.createElement('div');
+    styleElement.id = 'cod-verifier-additional-css';
+    styleElement.innerHTML = additionalCSS;
+    document.head.appendChild(styleElement);
+}

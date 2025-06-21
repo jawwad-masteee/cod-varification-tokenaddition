@@ -160,6 +160,237 @@
     color: #6b7280 !important;
 }
 
+/* ===== QR CODE MODAL STYLES ===== */
+.cod-qr-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.8);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+}
+
+.cod-qr-content {
+    background: white;
+    border-radius: 12px;
+    padding: 0;
+    max-width: 400px;
+    width: 90%;
+    max-height: 90vh;
+    overflow-y: auto;
+}
+
+.cod-qr-header {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 20px;
+    border-radius: 12px 12px 0 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.cod-qr-header h3 {
+    margin: 0;
+    font-size: 18px;
+}
+
+.cod-qr-close {
+    background: none;
+    border: none;
+    color: white;
+    font-size: 24px;
+    cursor: pointer;
+    padding: 0;
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    transition: background-color 0.2s;
+}
+
+.cod-qr-close:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.cod-qr-body {
+    padding: 30px;
+    text-align: center;
+}
+
+.cod-qr-code-container {
+    margin: 20px auto;
+    display: inline-block;
+    padding: 20px;
+    background: #f8fafc;
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+}
+
+.cod-qr-info {
+    color: #667eea;
+    font-weight: 500;
+    margin: 15px 0 5px 0;
+}
+
+.cod-qr-trust {
+    color: #10b981;
+    font-size: 14px;
+    margin: 5px 0 20px 0;
+}
+
+.cod-qr-timer {
+    background: #fef3c7;
+    color: #92400e;
+    padding: 10px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+/* ===== SUCCESS ANIMATION STYLES ===== */
+.cod-success-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.8);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10001;
+}
+
+.cod-success-content {
+    background: white;
+    border-radius: 12px;
+    padding: 40px;
+    text-align: center;
+    max-width: 400px;
+    width: 90%;
+}
+
+.cod-success-animation {
+    margin-bottom: 20px;
+}
+
+.cod-checkmark {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    display: block;
+    stroke-width: 3;
+    stroke: #10b981;
+    stroke-miterlimit: 10;
+    margin: 0 auto 20px;
+    position: relative;
+    animation: cod-checkmark-fill 0.4s ease-in-out 0.4s forwards, cod-checkmark-scale 0.3s ease-in-out 0.9s both;
+}
+
+.cod-checkmark-circle {
+    stroke-dasharray: 166;
+    stroke-dashoffset: 166;
+    stroke-width: 3;
+    stroke-miterlimit: 10;
+    stroke: #10b981;
+    fill: none;
+    animation: cod-checkmark-stroke 0.6s cubic-bezier(0.65, 0, 0.45, 1) forwards;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    border: 3px solid #10b981;
+}
+
+.cod-checkmark-stem {
+    position: absolute;
+    width: 3px;
+    height: 20px;
+    background: #10b981;
+    left: 32px;
+    top: 45px;
+    transform: rotate(45deg);
+    transform-origin: left bottom;
+    animation: cod-checkmark-stem 0.3s ease-in-out 0.9s both;
+}
+
+.cod-checkmark-kick {
+    position: absolute;
+    width: 3px;
+    height: 12px;
+    background: #10b981;
+    left: 25px;
+    top: 52px;
+    transform: rotate(-45deg);
+    transform-origin: left bottom;
+    animation: cod-checkmark-kick 0.2s ease-in-out 1.15s both;
+}
+
+.cod-success-content h3 {
+    color: #10b981;
+    margin: 0 0 15px 0;
+    font-size: 24px;
+}
+
+.cod-success-content p {
+    color: #374151;
+    margin: 0 0 20px 0;
+    line-height: 1.5;
+}
+
+.cod-success-timer {
+    color: #6b7280;
+    font-size: 14px;
+}
+
+@keyframes cod-checkmark-stroke {
+    100% {
+        stroke-dashoffset: 0;
+    }
+}
+
+@keyframes cod-checkmark-scale {
+    0%, 100% {
+        transform: none;
+    }
+    50% {
+        transform: scale3d(1.1, 1.1, 1);
+    }
+}
+
+@keyframes cod-checkmark-fill {
+    100% {
+        box-shadow: inset 0px 0px 0px 30px #10b981;
+    }
+}
+
+@keyframes cod-checkmark-stem {
+    0% {
+        height: 0;
+    }
+    100% {
+        height: 20px;
+    }
+}
+
+@keyframes cod-checkmark-kick {
+    0% {
+        height: 0;
+    }
+    100% {
+        height: 12px;
+    }
+}
+
 /* ===== EXISTING STYLES CONTINUE ===== */
 
 .cod-verifier-container {
@@ -550,6 +781,42 @@
         flex-direction: column;
         text-align: center;
         gap: 10px;
+    }
+    
+    .cod-qr-content {
+        width: 95%;
+        margin: 20px;
+    }
+    
+    .cod-qr-body {
+        padding: 20px;
+    }
+    
+    .cod-success-content {
+        width: 95%;
+        padding: 30px 20px;
+    }
+    
+    .cod-checkmark {
+        width: 60px;
+        height: 60px;
+    }
+    
+    .cod-checkmark-circle {
+        width: 60px;
+        height: 60px;
+    }
+    
+    .cod-checkmark-stem {
+        left: 24px;
+        top: 34px;
+        height: 15px;
+    }
+    
+    .cod-checkmark-kick {
+        left: 19px;
+        top: 39px;
+        height: 9px;
     }
 }
 

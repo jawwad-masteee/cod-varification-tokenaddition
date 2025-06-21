@@ -12,11 +12,13 @@ class CODVerifierAjax {
         add_action('wp_ajax_cod_verify_otp', array($this, 'verify_otp'));
         add_action('wp_ajax_nopriv_cod_verify_otp', array($this, 'verify_otp'));
         
-        // NEW: Razorpay Token Payment Handlers
+        // Enhanced Razorpay Token Payment Handlers
         add_action('wp_ajax_cod_create_payment_link', array($this, 'create_payment_link'));
         add_action('wp_ajax_nopriv_cod_create_payment_link', array($this, 'create_payment_link'));
         add_action('wp_ajax_cod_verify_token_payment', array($this, 'verify_token_payment'));
         add_action('wp_ajax_nopriv_cod_verify_token_payment', array($this, 'verify_token_payment'));
+        add_action('wp_ajax_cod_check_payment_status', array($this, 'check_payment_status'));
+        add_action('wp_ajax_nopriv_cod_check_payment_status', array($this, 'check_payment_status'));
         add_action('wp_ajax_cod_razorpay_webhook', array($this, 'handle_webhook'));
         add_action('wp_ajax_nopriv_cod_razorpay_webhook', array($this, 'handle_webhook'));
     }
@@ -366,6 +368,7 @@ class CODVerifierAjax {
             wp_send_json_success(array(
                 'short_url' => 'https://rzp.io/i/test_' . time(),
                 'link_id' => 'plink_test_' . time(),
+                'key' => 'rzp_test_key',
                 'test_mode' => true,
                 'message' => __('Test mode: Payment link created successfully', 'cod-verifier')
             ));
@@ -398,20 +401,25 @@ class CODVerifierAjax {
             $customer_phone = $_SESSION['cod_otp_phone'];
         }
         
-        // CRITICAL FIX: Generate unique reference_id with max 40 characters
+        // Generate unique reference_id with max 40 characters
         $reference_id = substr(md5(uniqid('', true)), 0, 30);
+        
+        // Store payment session
+        $payment_session_id = 'cod_payment_' . time() . '_' . rand(1000, 9999);
+        $_SESSION['cod_payment_session'] = $payment_session_id;
+        $_SESSION['cod_payment_created'] = time();
         
         $payment_link_data = array(
             'amount' => 100, // ₹1 in paise
             'currency' => 'INR',
             'description' => '₹1 COD Token Payment - Will be refunded automatically',
-            // CRITICAL FIX: Set expire_by to minimum 15 minutes (900 seconds) as required by Razorpay - Increased to 17 mins for buffer
-            'expire_by' => time() + (17 * 60), // 17 minutes expiry for API compliance with buffer
-            'reference_id' => $reference_id, // Max 40 characters
+            'expire_by' => time() + (17 * 60), // 17 minutes expiry
+            'reference_id' => $reference_id,
             'notes' => array(
                 'purpose' => 'COD Token Payment',
                 'auto_refund' => 'yes',
-                'site_url' => home_url()
+                'site_url' => home_url(),
+                'session_id' => $payment_session_id
             )
         );
         
@@ -449,14 +457,86 @@ class CODVerifierAjax {
             $_SESSION['cod_payment_link_created'] = time();
             
             wp_send_json_success(array(
-                'short_url' => $result['short_url'], // Return the actual short_url from Razorpay
+                'short_url' => $result['short_url'],
                 'link_id' => $result['id'],
+                'key' => $key_id,
                 'test_mode' => false,
                 'message' => __('Payment link created successfully', 'cod-verifier')
             ));
         } else {
             $error_message = isset($result['error']['description']) ? $result['error']['description'] : __('Failed to create payment link. Please check Razorpay configuration.', 'cod-verifier');
             wp_send_json_error($error_message);
+        }
+    }
+    
+    public function check_payment_status() {
+        // Verify nonce
+        if (!wp_verify_nonce($_POST['nonce'], 'cod_verifier_nonce')) {
+            wp_send_json_error(__('Security check failed.', 'cod-verifier'));
+            return;
+        }
+        
+        $link_id = sanitize_text_field($_POST['link_id']);
+        $test_mode = get_option('cod_verifier_test_mode', '1');
+        
+        if ($test_mode === '1') {
+            // Test mode - simulate random payment status
+            $statuses = ['created', 'paid'];
+            $random_status = $statuses[array_rand($statuses)];
+            
+            wp_send_json_success(array(
+                'status' => $random_status,
+                'payment_id' => 'pay_test_' . time(),
+                'test_mode' => true
+            ));
+            return;
+        }
+        
+        // Production mode - check actual payment status
+        $key_id = get_option('cod_verifier_razorpay_key_id', '');
+        $key_secret = get_option('cod_verifier_razorpay_key_secret', '');
+        
+        if (empty($key_id) || empty($key_secret)) {
+            wp_send_json_error(__('Razorpay configuration error.', 'cod-verifier'));
+            return;
+        }
+        
+        // Get payment link details
+        $response = wp_remote_get("https://api.razorpay.com/v1/payment_links/{$link_id}", array(
+            'headers' => array(
+                'Authorization' => 'Basic ' . base64_encode($key_id . ':' . $key_secret)
+            ),
+            'timeout' => 30
+        ));
+        
+        if (is_wp_error($response)) {
+            wp_send_json_error(__('Failed to check payment status.', 'cod-verifier'));
+            return;
+        }
+        
+        $body = wp_remote_retrieve_body($response);
+        $result = json_decode($body, true);
+        
+        if (isset($result['status'])) {
+            $payment_id = null;
+            
+            // If payment link is paid, get the payment ID
+            if ($result['status'] === 'paid' && isset($result['payments'])) {
+                foreach ($result['payments'] as $payment) {
+                    if ($payment['status'] === 'captured') {
+                        $payment_id = $payment['id'];
+                        break;
+                    }
+                }
+            }
+            
+            wp_send_json_success(array(
+                'status' => $result['status'],
+                'payment_id' => $payment_id,
+                'test_mode' => false
+            ));
+        } else {
+            wp_send_json_error(__('Invalid payment link response.', 'cod-verifier'));
         }
     }
     
