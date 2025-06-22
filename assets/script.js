@@ -13,25 +13,27 @@ jQuery(document).ready(function($) {
     initCODVerifier();
     
     function initCODVerifier() {
-        // Show verification box when COD is selected
-        $(document).on('change', 'input[name="payment_method"]', function() {
-            if ($(this).val() === 'cod') {
-                showVerificationBox();
-            } else {
-                hideVerificationBox();
-            }
-        });
-        
-        // Initialize if COD is already selected
-        if ($('input[name="payment_method"]:checked').val() === 'cod') {
-            showVerificationBox();
-        }
+        // WooCommerce checkout update event (CRITICAL FIX)
+        $(document).on('updated_checkout', forceVerifyBoxIfCOD);
+        // Manual payment method change
+        $(document).on('change', 'input[name="payment_method"]', forceVerifyBoxIfCOD);
+        // Initial load
+        forceVerifyBoxIfCOD();
         
         // Bind event handlers
         bindEventHandlers();
         
         // Update phone help text based on country selection
         updatePhoneHelpText();
+    }
+    
+    function forceVerifyBoxIfCOD() {
+        const method = $('input[name="payment_method"]:checked').val();
+        if (method === 'cod') {
+            showVerificationBox();
+        } else {
+            hideVerificationBox();
+        }
     }
     
     function bindEventHandlers() {
@@ -91,6 +93,9 @@ jQuery(document).ready(function($) {
         } else if (wrapper.length > 0) {
             wrapper.attr('id', 'cod-verifier-wrapper-active').show();
         }
+        
+        // CRITICAL FIX: Force visibility for existing wrapper
+        $('#cod-verifier-wrapper-active').show().css('display', 'block');
         
         // Show warning message
         showWarningMessage();
